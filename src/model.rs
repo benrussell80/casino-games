@@ -1,5 +1,3 @@
-use std::{rc::Rc, cell::RefCell};
-
 use crate::{wasm4::*, GAMEPAD1_PREV, GAMEPAD2_PREV, GAMEPAD3_PREV, GAMEPAD4_PREV};
 
 #[derive(Copy, Clone, Debug)]

@@ -5,7 +5,7 @@ mod model;
 use wasm4::*;
 use model::{Model, User};
 mod blackjack;
-use blackjack::BlackJack;
+use blackjack::{BlackJack};
 
 
 static mut GAMEPAD1_PREV: u8 = 0;
@@ -41,7 +41,7 @@ fn start() {
 
 #[derive(Copy, Clone)]
 pub struct PlayerState {
-    bank: u32
+    bank: u32,
 }
 
 struct MainGame {
@@ -60,7 +60,7 @@ impl MainGame {
                 ("Blackjack", BlackJack::new)
             ]);
             self.num_games = 1;
-            self.player_state = PlayerState { bank: 10000 };
+            self.player_state = PlayerState { bank: 100 };
         }
     }
 }
@@ -118,7 +118,9 @@ impl Model<PlayerState> for MainGame {
                 }
                 if first_player_inputs.tap_x {
                     let (_, func) = &games[*current_index];
-                    let mut game = (*func)(self.frame_count);
+                    let mut game = (*func)(
+                        self.frame_count + unsafe { *MOUSE_X + *MOUSE_Y } as u64
+                    );
                     game.share_state(*player_state);
                     *current_game = Some(game);
                 }

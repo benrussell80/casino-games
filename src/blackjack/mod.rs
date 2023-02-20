@@ -11,7 +11,7 @@ struct Button {
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 #[repr(u8)]
-enum CardValue {
+pub enum CardValue {
     Ace = 1,
     Two,
     Three,
@@ -69,7 +69,7 @@ impl CardValue {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq)]
-enum CardSuit {
+pub enum CardSuit {
     Club,
     Diamond,
     Heart,
@@ -83,13 +83,57 @@ impl CardSuit {
     }
 }
 
-#[derive(Clone)]
-struct Card {
-    value: CardValue,
-    suit: CardSuit,
+#[derive(Clone, Debug)]
+pub struct Card {
+    pub value: CardValue,
+    pub suit: CardSuit,
 }
 
 impl Card {
+    fn draw_sprite(&self, x: i32, y: i32, face_up: bool) {
+        let card_sprite = [5, 85, 64, 106, 170, 69, 170, 169, 86, 170, 165, 90, 170, 149, 106, 170, 85, 170, 169, 86, 170, 165, 90, 170, 149, 106, 170, 85, 170, 169, 86, 170, 165, 90, 170, 149, 106, 170, 81, 170, 169, 1, 85, 80];
+        if face_up {
+            unsafe {
+                *DRAW_COLORS = 0x0130;
+            }
+            blit(&card_sprite, x, y, 11, 16, BLIT_2BPP);
+            match self.suit {
+                CardSuit::Club | CardSuit::Spade => {
+                    unsafe {
+                        *DRAW_COLORS |= 0x3000;
+                    }
+                }
+                CardSuit::Diamond | CardSuit::Heart => {
+                    unsafe {
+                        *DRAW_COLORS |= 0x2000;
+                    }
+                }
+            }
+            let value_sprite = match self.value {
+                CardValue::Ace => [60, 195, 195, 255, 195],
+                CardValue::Two => [60, 195, 3, 12, 63],
+                CardValue::Three => [255, 3, 63, 3, 255],
+                CardValue::Four => [3, 15, 51, 255, 3],
+                CardValue::Five => [255, 192, 252, 3, 252],
+                CardValue::Six => [63, 192, 252, 195, 252],
+                CardValue::Seven => [255, 15, 12, 48, 48],
+                CardValue::Eight => [60, 195, 60, 195, 60],
+                CardValue::Nine => [60, 195, 63, 3, 3],
+                CardValue::Ten => [255, 12, 12, 12, 12],
+                CardValue::Jack => [255, 12, 12, 204, 48],
+                CardValue::Queen => [48, 204, 204, 204, 51],
+                CardValue::King => [195, 204, 240, 204, 195]
+            };
+            blit(&value_sprite, x + 3, y + 2, 4, 5, BLIT_2BPP);
+            // draw icon underneath
+        } else {
+            unsafe {
+                *DRAW_COLORS = 0x0430;
+            }
+            blit(&card_sprite, x, y, 11, 16, BLIT_2BPP);
+        }
+    }
+
     fn new_shuffled_horn(rng: &Rng) -> Vec<Self> {
         let mut horn = Vec::with_capacity(7 * 52);
         for _ in 0..7 {
@@ -105,8 +149,8 @@ impl Card {
 }
 
 #[derive(Clone)]
-struct Hand {
-    cards: Vec<Card>
+pub struct Hand {
+    pub cards: Vec<Card>
 }
 
 impl Hand {
@@ -118,63 +162,88 @@ impl Hand {
 }
 
 impl Hand {
-    fn max_points(&self) -> u8 {
-        let (pts, is_soft) = self.points();
-        if is_soft {
-            if pts <= 11 {
-                pts + 10
-            } else {
-                pts
-            }
-        } else {
-            pts
-        }
+    fn dealer_showing_ace(&self) -> bool {
+        self.cards[1].value == CardValue::Ace 
     }
 
-    fn points(&self) -> (u8, bool) {  // value, is_soft
+    fn points(&self) -> Vec<u8> {
         use CardValue::*;
-        let mut pts = 0;
-        let mut has_ace = false;
+        let mut pts = vec![];
+        let mut sum = 0;
         for card in self.cards.iter() {
             match card.value {
                 Ace => {
-                    has_ace = true;
-                    pts += 1;
+                    sum += 1;
                 }
                 Ten | Jack | Queen | King => {
-                    pts += 10;
+                    sum += 10;
                 }
                 other => {
-                    pts += other as u8;
+                    sum += other as u8;
                 }
             }
         }
-        (pts, has_ace)
+        pts.push(sum);
+        for card in self.cards.iter() {
+            if Ace == card.value {
+                for prev_pt in pts.clone() {
+                    pts.push(prev_pt + 10)
+                }
+            }
+        }
+        pts
     }
 
     fn dealer_must_hit(&self) -> bool {
-        let (pts, is_soft) = self.points();
-        pts < 17 || (pts == 17 && is_soft)
+        for pt in self.points() {
+            if pt > 16 {
+                return false
+            }
+        }
+        true
     }
 
     fn is_bust(&self) -> bool {
-        let (pts, _) = self.points();
-        pts > 21
+        self.points().into_iter().all(|pt| pt > 21)
     }
 
     fn is_blackjack(&self) -> bool {
-        self.cards.len() == 2 && self.max_points() == 21
+        self.cards.len() == 2 && self.points().into_iter().any(|pt| pt == 21)
     }
 
-    fn showdown_result(&self, dealer_hand: &Self) -> HandResult {
-        let player_points = self.max_points();
-        let dealer_points = dealer_hand.max_points();
-        if dealer_points == player_points {
-            HandResult::Push
-        } else if dealer_points > player_points || self.is_bust() {
+    fn showdown_result(&self, dealer_hand: Option<&Self>) -> HandResult {
+        if self.is_blackjack() {
+            HandResult::BlackJack
+        } else if self.is_bust() {
             HandResult::Lose
         } else {
-            HandResult::Win
+            let player_points = self.points().into_iter().filter(|pt| *pt <= 21).max();
+            let dealer_hand = dealer_hand.unwrap();
+            let dealer_points = dealer_hand.points().into_iter().filter(|pt| *pt <= 21).max();
+            match (player_points, dealer_points) {
+                (Some(pp), Some(dp)) => {
+                    if pp == 21 {
+                        HandResult::BlackJack
+                    } else if pp == dp {
+                        HandResult::Push
+                    } else if pp < dp {
+                        HandResult::Lose
+                    } else {
+                        HandResult::Win
+                    }
+                }
+                (Some(pp), None) => {
+                    if pp != 21 {
+                        HandResult::Win
+                    } else {
+                        HandResult::BlackJack
+                    }
+                }
+                (None, Some(_))
+                | (None, None) => {
+                    HandResult::Lose
+                }
+            }
         }
     }
 
@@ -183,8 +252,7 @@ impl Hand {
     }
 
     fn can_double_down(&self) -> bool {
-        let (pts, is_soft) = self.points();
-        self.cards.len() == 2 && (pts == 10 || pts == 11 || (pts == 1 && is_soft))
+        self.points().into_iter().any(|pt| pt == 10 || pt == 11)
     }
 }
 
@@ -200,28 +268,6 @@ struct PlayingState {
 }
 
 impl PlayingState {
-    fn current_button(&self) -> &Button {
-        match self.button_index {
-            0 => &self.hit_button,
-            1 => &self.stand_button,
-            2 => &self.split_button,
-            3 => &self.double_down_button,
-            _ => unreachable!(),
-        }
-    }
-
-    fn incr_button_index(&mut self) {
-        self.button_index = (self.button_index + 1) % 4;
-    }
-
-    fn decr_button_index(&mut self) {
-        if self.button_index == 0 {
-            self.button_index = 3
-        } else {
-            self.button_index -= 1
-        }
-    }
-
     fn new(dealer_hand: Hand, player_hand: Hand) -> Self {
         Self {
             hit_button: Button { text: "Hit", disabled: false },
@@ -230,7 +276,7 @@ impl PlayingState {
             // surrender_button: Button { text: "Surrender", disabled: true },
             double_down_button: Button { text: "Double Down", disabled: true },
             button_index: 0,
-            dealer_hand: Hand { cards: vec![] },
+            dealer_hand: dealer_hand,
             player_hands: vec![
                 player_hand
             ],
@@ -243,11 +289,13 @@ enum HandResult {
     Lose,
     Win,
     Push,
+    BlackJack,
 }
 
 struct EndState {
-    // x to play again or z to return to main menu
+    dealer_hand: Hand,
     player_hands: Vec<(Hand, HandResult)>,
+    bought_insurance: bool,
 }
 
 struct DealingState {
@@ -269,6 +317,7 @@ impl DealingState {
 struct DealerResolvingState {
     player_hands: Vec<Hand>,
     dealer_hand: Hand,
+    frame_count: u64,
 }
 
 struct InsuranceState {
@@ -328,41 +377,34 @@ impl BlackJack {
     }
 }
 
-const BET_INCREMENT: u32 = 5;
-const MINIMUM_BET: u32 = 5;
+const BET_INCREMENT: u32 = 10;
+const MINIMUM_BET: u32 = 10;
 
 
 
 
-fn display_cards(dealer_hand: &Hand, player_hands: &[&Hand], showdown: bool) {
+fn display_cards(dealer_hand: &Hand, player_hands: &[&Hand], active_player_hand_index: usize, showdown: bool) {
     for (index, card) in dealer_hand.cards.iter().enumerate() {
-        if showdown && index == 0 {
-
-        } else {
-            
-        }
-        unsafe {
-            *DRAW_COLORS = 0x01;
-        }
         let x = (60 + index * 14) as _;
-        rect(x, 65, 12, 16);
-        unsafe {
-            *DRAW_COLORS = if card.suit == CardSuit::Club || card.suit == CardSuit::Spade {
-                0x03
-            } else {
-                0x02
+        let y = 67;
+        let face_up = !(!showdown && index == 0);
+        card.draw_sprite(x, y, face_up)
+    }
+    // let num_hands = player_hands.len();
+    for (hand_index, hand) in player_hands.iter().enumerate() {
+        if hand_index == active_player_hand_index {
+            for (card_index, card) in hand.cards.iter().enumerate() {
+                let x = (60 + card_index * 14) as _;
+                let y = 97;
+                card.draw_sprite(x, y, true);
             }
         }
-        text(format!("{}", card.value), x + 2, 67);
     }
 }
 
 impl Model<PlayerState> for BlackJack {
     fn update(&mut self, inputs: [crate::model::Inputs; 4]) -> Option<PlayerState> {
         let player_one_inputs = inputs[0];
-        // if player_one_inputs.press_z {
-        //     return Some(rc_refcell(StartScreen::new(get_games(), self.player_bank)))
-        // }
         match self {
             Self { state: BlackJackState::Betting, .. } => {
                 // buttons for changing bet amount
@@ -385,41 +427,122 @@ impl Model<PlayerState> for BlackJack {
                     }
                 }
             }
-            Self { state: BlackJackState::Playing(state), player_bet, total_bet, .. } => {
+            Self { state: BlackJackState::Playing(state), player_bet, .. } => {
                 if state.player_hand_index >= state.player_hands.len() {
-                    self.state = BlackJackState::DealerResolving(DealerResolvingState {
-                        player_hands: state.player_hands.clone(),
-                        dealer_hand: state.dealer_hand.clone()
-                    });
+                    let mut showdown_needed = false;
+                    for hand in state.player_hands.iter() {
+                        if hand.is_bust() || hand.is_blackjack() {
+                            continue;
+                        }
+                        showdown_needed = true;
+                        break
+                    }
+                    if showdown_needed {
+                        self.state = BlackJackState::DealerResolving(DealerResolvingState {
+                            player_hands: state.player_hands.clone(),
+                            dealer_hand: state.dealer_hand.clone(),
+                            frame_count: 0
+                        });
+                    } else {
+                        let mut player_hands = Vec::new();
+                        for hand in state.player_hands.iter() {
+                            player_hands.push((
+                                hand.clone(),
+                                hand.showdown_result(None)
+                            ))
+                        }
+                        self.state = BlackJackState::End(EndState {
+                            dealer_hand: state.dealer_hand.clone(),
+                            player_hands,
+                            bought_insurance: false
+                        })
+                    }
                 } else {
-                    let mut hand = &state.player_hands[state.player_hand_index];
-                    if hand.is_bust() {
-                        *total_bet -= *player_bet;
+                    let hand = &mut state.player_hands[state.player_hand_index];
+                    if hand.is_bust() || hand.is_blackjack() {
                         state.player_hand_index += 1;
                     }
-                    if hand.can_split() {
+                    if hand.can_split() && self.player_bank >= *player_bet {
                         state.split_button.disabled = false;
+                    } else {
+                        state.split_button.disabled = true;
                     }
-                    if hand.can_double_down() {
+                    if hand.can_double_down() && self.player_bank >= *player_bet {
                         state.double_down_button.disabled = false;
+                    } else {
+                        state.double_down_button.disabled = true;
                     }
-                    // left right buttons
-                    if player_one_inputs.tap_left {
-                        state.decr_button_index()
-                    }
-                    if player_one_inputs.tap_right {
-                        state.incr_button_index()
+                    if player_one_inputs.tap_x {
+                        match state.button_index {
+                            0 if !state.hit_button.disabled => {  // Hit
+                                hand.cards.push(draw_card(&mut self.horn, &self.rng));
+                            }
+                            1 if !state.stand_button.disabled => {  // Stand
+                                state.player_hand_index += 1
+                            }
+                            2 if !state.split_button.disabled => {  // Split
+                                // take from hand 1
+                                let new_hand_card = hand.cards.pop().unwrap();
+                                hand.cards.push(draw_card(&mut self.horn, &self.rng));
+
+                                // give to hand 2
+                                let mut new_hand = Hand::new();
+                                new_hand.cards.push(new_hand_card);
+                                new_hand.cards.push(draw_card(&mut self.horn, &self.rng));
+                                state.player_hands.push(new_hand);
+
+                                self.total_bet += *player_bet;
+                            }
+                            3 if !state.double_down_button.disabled => {  // Double Down
+                                hand.cards.push(draw_card(&mut self.horn, &self.rng));
+                                self.total_bet += self.player_bet;
+                                state.player_hand_index += 1;
+                            },
+                            _ => {
+                                tone(140, 6, 40, 0);
+                            }
+                        }
+                    } else {
+                        // left right buttons
+                        if player_one_inputs.tap_right && state.button_index % 2 == 0 {
+                            state.button_index += 1;
+                        }
+                        if player_one_inputs.tap_left && state.button_index % 2 == 1 {
+                            state.button_index -= 1;
+                        }
+                        if player_one_inputs.tap_down && state.button_index / 2 == 0 {
+                            state.button_index += 2;
+                        }
+                        if player_one_inputs.tap_up && state.button_index / 2 == 1 {
+                            state.button_index -= 2;
+                        }
                     }
                 }
-                // if player can split then enable split button
-                // if player can double down then enable double down button
-                // if player can surrender then enable surrender button
-                // if player can hit then enable hit button
-                // if state.player_hands.
             }
             Self { state: BlackJackState::End(state), .. } => {
-                if player_one_inputs.press_x {
+                if self.player_bet != 0 {
+                    if state.dealer_hand.is_blackjack() {
+                        if state.bought_insurance {
+                            self.player_bank += self.player_bet * 3 / 2
+                        }
+                    } else {
+                        for (_, res) in state.player_hands.iter() {
+                            self.player_bank += match res {
+                                HandResult::BlackJack => self.player_bet * (1 + 6 / 5),
+                                HandResult::Lose => 0,
+                                HandResult::Push => self.player_bet,
+                                HandResult::Win => self.player_bet * 2,
+                            }
+                        }
+                    }
+                    self.total_bet = 0;
+                    self.player_bet = 0;
+                }
+                if player_one_inputs.tap_x {
                     self.state = BlackJackState::Betting
+                }
+                if player_one_inputs.tap_z {
+                    return Some(PlayerState { bank: self.player_bank })
                 }
             }
             Self { state: BlackJackState::Dealing(state), rng, horn, .. } => {
@@ -433,7 +556,7 @@ impl Model<PlayerState> for BlackJack {
                 } else if state.frame == 40 {
                     state.player_hand.cards.push(draw_card(horn, rng));
                 } else if state.frame == 50 {
-                    if state.dealer_hand.cards[0].value == CardValue::Ace {
+                    if state.dealer_hand.dealer_showing_ace() {
                         self.state = BlackJackState::Insurance(InsuranceState::new(
                             state.dealer_hand.clone(),
                             state.player_hand.clone(),
@@ -444,29 +567,60 @@ impl Model<PlayerState> for BlackJack {
                             state.player_hand.clone(),
                         ));
                     }
+                } else if state.frame > 50 {
+                    unreachable!()
                 }
             }
             Self { state: BlackJackState::DealerResolving(state), .. } => {
-
+                state.frame_count += 1;
+                if state.dealer_hand.dealer_must_hit() {
+                    if state.frame_count % 30 == 0 {
+                        state.dealer_hand.cards.push(draw_card(&mut self.horn, &self.rng));
+                    }
+                } else {
+                    let mut player_hands = vec![];
+                    for hand in state.player_hands.iter() {
+                        let res = hand.showdown_result(Some(&state.dealer_hand));
+                        player_hands.push((
+                            hand.clone(),
+                            res
+                        ));
+                    }
+                    self.state = BlackJackState::End(EndState {
+                        dealer_hand: state.dealer_hand.clone(),
+                        player_hands,
+                        bought_insurance: false
+                    });
+                }
             }
             Self { state: BlackJackState::Insurance(state), .. } => {
                 // buttons for changing bet amount
-                if player_one_inputs.tap_up {
-                    state.player_insurance_bet = state.player_insurance_bet.saturating_add(BET_INCREMENT)
-                } else if player_one_inputs.tap_down {
-                    state.player_insurance_bet = state.player_insurance_bet.saturating_sub(BET_INCREMENT);
-                }
-                state.player_insurance_bet = state.player_insurance_bet.max(MINIMUM_BET);
-                state.player_insurance_bet = state.player_insurance_bet.min(self.player_bank);
-
-                // buttons for making bet
-                if player_one_inputs.tap_x {
-                    if state.player_insurance_bet > self.player_bank {
-                        // make sound
+                if player_one_inputs.tap_x || player_one_inputs.tap_z {
+                    let bought_insurance = if player_one_inputs.tap_x {
+                        self.player_bank -= self.player_bet / 2;
+                        true
                     } else {
-                        self.player_bank -= state.player_insurance_bet;
-                        self.state = BlackJackState::Playing(PlayingState::new(state.dealer_hand.clone(), state.player_hand.clone()));
-                    }
+                        false
+                    };
+                    if state.dealer_hand.is_blackjack() {
+                        self.state = BlackJackState::End(EndState {
+                            dealer_hand: state.dealer_hand.clone(),
+                            player_hands: vec![(
+                                state.player_hand.clone(),
+                                if state.player_hand.is_blackjack() {
+                                    HandResult::BlackJack
+                                } else {
+                                    HandResult::Lose
+                                }
+                            )],
+                            bought_insurance
+                        });
+                    } else {
+                        self.state = BlackJackState::Playing(PlayingState::new(
+                            state.dealer_hand.clone(),
+                            state.player_hand.clone()
+                        ));
+                    } 
                 }
             }
         }
@@ -487,13 +641,16 @@ impl Model<PlayerState> for BlackJack {
         rect(0, 140, 160, 20);
 
         // draw
-        text(format!("Chips: ${}", self.player_bank), 10, 10);
+        text(format!("Chips: ${}", self.player_bank), 10, 5);
         
         // draw bank
-        text(format!("Bet Amount: ${}", self.player_bet), 10, 20);
+        text(format!("Bet Amount: ${}", self.player_bet), 10, 13);
         
         // draw cards in horn
-        text(format!("Cards in Shoe: {}", self.horn.len()), 10, 30);
+        text(format!("Cards in Shoe: {}", self.horn.len()), 10, 21);
+
+        // draw total bet
+        text(format!("Total Bet: ${}", self.total_bet), 10, 29);
 
         // draw bet amount
         match self {
@@ -508,14 +665,93 @@ impl Model<PlayerState> for BlackJack {
                 unsafe {
                     extern_text(t.as_ptr(), t.len(), 0, 151);
                 }
-            },
-            Self { state: BlackJackState::Dealing(state), .. } => {
+            }
+            Self { state: BlackJackState::Dealing(DealingState { dealer_hand, player_hand, ..}), .. } => {
+                display_cards(
+                    dealer_hand,
+                    &[player_hand],
+                    0,
+                    false,
+                );
+            }
+            Self { state: BlackJackState::Insurance(InsuranceState { player_hand, dealer_hand, player_insurance_bet }), .. } => {
+                display_cards(
+                    dealer_hand,
+                    &[player_hand],
+                    0,
+                    false
+                );
+                unsafe { *DRAW_COLORS = 0x31; }
+                text(format!("Insurance Bet: ${}", player_insurance_bet), 10, 37);
+                let t = b"Insurance bet?";
+                unsafe {
+                    extern_text(t.as_ptr(), t.len(), 0, 142);
+                }
+
+                let t = b"Use \x80 to make bet.";
+                unsafe {
+                    extern_text(t.as_ptr(), t.len(), 0, 151);
+                }
+            }
+            Self { state: BlackJackState::Playing(state), .. } => {
                 display_cards(
                     &state.dealer_hand,
-                    &[&state.player_hand],
+                    &state.player_hands.iter().collect::<Vec<_>>(),
+                    state.player_hand_index,
+                    false
                 );
-            },
-            _ => {}
+                // 0: hit, 1: stand, 2: split, 3: double_down
+                for (index, button) in [&state.hit_button, &state.stand_button, &state.split_button, &state.double_down_button].iter().enumerate() {
+                    if index == state.button_index {
+                        unsafe {
+                            *DRAW_COLORS = 0x0043
+                        }
+                    } else {
+                        unsafe {
+                            *DRAW_COLORS = 0x0003
+                        }
+                    }
+                    // extern_text(t.as_ptr(), t.len(), 0, 142);
+                    // extern_text(t.as_ptr(), t.len(), 0, 151);
+                    text(button.text, (2 + (index % 2) * 60) as _, (142 + 9 * (index / 2)) as _);
+                }
+            }
+            Self {
+                state: BlackJackState::DealerResolving(DealerResolvingState {
+                    dealer_hand,
+                    player_hands,
+                    ..
+                }),
+                ..
+            } => {
+                display_cards(
+                    dealer_hand,
+                    &player_hands.iter().collect::<Vec<_>>(),
+                    0,
+                    true
+                );
+            }
+            Self { state: BlackJackState::End(EndState { dealer_hand, player_hands , .. }), .. } => {
+                display_cards(
+                    dealer_hand,
+                    &player_hands.iter().map(|(x, _)| x).collect::<Vec<_>>(),
+                    0,
+                    true
+                );
+
+                unsafe { *DRAW_COLORS = 0x31; }
+                let t = b"Use \x80 to play again.";
+                unsafe {
+                    extern_text(t.as_ptr(), t.len(), 0, 142);
+                }
+                let t = b"Use \x81 to exit.";
+                unsafe {
+                    extern_text(t.as_ptr(), t.len(), 0, 151);
+                }
+            }
+        }
+        unsafe {
+            *DRAW_COLORS = 0x0430
         }
     }
 
