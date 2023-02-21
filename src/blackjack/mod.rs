@@ -4,6 +4,10 @@ use crate::{model::Model, wasm4::*, PlayerState};
 use fastrand::Rng;
 
 
+fn buzz() {
+    tone(140, 6, 40, 0);
+}
+
 struct Button {
     text: &'static str,
     disabled: bool
@@ -196,7 +200,7 @@ impl Hand {
 
     fn dealer_must_hit(&self) -> bool {
         for pt in self.points() {
-            if pt > 16 {
+            if 17 <= pt && pt <= 21 {
                 return false
             }
         }
@@ -222,9 +226,7 @@ impl Hand {
             let dealer_points = dealer_hand.points().into_iter().filter(|pt| *pt <= 21).max();
             match (player_points, dealer_points) {
                 (Some(pp), Some(dp)) => {
-                    if pp == 21 {
-                        HandResult::BlackJack
-                    } else if pp == dp {
+                    if pp == dp {
                         HandResult::Push
                     } else if pp < dp {
                         HandResult::Lose
@@ -252,7 +254,7 @@ impl Hand {
     }
 
     fn can_double_down(&self) -> bool {
-        self.points().into_iter().any(|pt| pt == 10 || pt == 11)
+        self.cards.len() == 2 && self.points().into_iter().any(|pt| pt == 10 || pt == 11)
     }
 }
 
@@ -323,7 +325,6 @@ struct DealerResolvingState {
 struct InsuranceState {
     dealer_hand: Hand,
     player_hand: Hand,
-    player_insurance_bet: u32
 }
 
 impl InsuranceState {
@@ -331,7 +332,6 @@ impl InsuranceState {
         Self {
             dealer_hand,
             player_hand,
-            player_insurance_bet: 0,
         }
     }
 }
@@ -390,14 +390,20 @@ fn display_cards(dealer_hand: &Hand, player_hands: &[&Hand], active_player_hand_
         let face_up = !(!showdown && index == 0);
         card.draw_sprite(x, y, face_up)
     }
-    // let num_hands = player_hands.len();
+    let num_hands = player_hands.len();
     for (hand_index, hand) in player_hands.iter().enumerate() {
+        let space_size = 160 / num_hands;
+        let x = space_size * (hand_index + 1) - space_size * 2 / 3;
         if hand_index == active_player_hand_index {
-            for (card_index, card) in hand.cards.iter().enumerate() {
-                let x = (60 + card_index * 14) as _;
-                let y = 97;
-                card.draw_sprite(x, y, true);
+            unsafe {
+                *DRAW_COLORS = 0x0040;
             }
+            blit(&[4, 1, 5, 84, 84, 4, 0], x as _, 90, 5, 5, BLIT_2BPP);
+        }
+        for (card_index, card) in hand.cards.iter().enumerate() {
+            let x = x + card_index * 14; // if this is > 160 - sprite width go to next row
+            let y = 97;
+            card.draw_sprite(x as _, y, true);
         }
     }
 }
@@ -407,23 +413,32 @@ impl Model<PlayerState> for BlackJack {
         let player_one_inputs = inputs[0];
         match self {
             Self { state: BlackJackState::Betting, .. } => {
-                // buttons for changing bet amount
-                if player_one_inputs.tap_up {
-                    self.player_bet = self.player_bet.saturating_add(BET_INCREMENT)
-                } else if player_one_inputs.tap_down {
-                    self.player_bet = self.player_bet.saturating_sub(BET_INCREMENT);
+                if player_one_inputs.tap_z {
+                    return Some(PlayerState { bank: self.player_bank })
                 }
-                self.player_bet = self.player_bet.max(MINIMUM_BET);
-                self.player_bet = self.player_bet.min(self.player_bank);
+                if self.player_bank < MINIMUM_BET {
+                    if player_one_inputs.tap_x {
+                        buzz();
+                    }
+                } else {
+                    // buttons for changing bet amount
+                    if player_one_inputs.tap_up {
+                        self.player_bet = self.player_bet.saturating_add(BET_INCREMENT)
+                    } else if player_one_inputs.tap_down {
+                        self.player_bet = self.player_bet.saturating_sub(BET_INCREMENT);
+                    }
+                    self.player_bet = self.player_bet.max(MINIMUM_BET);
+                    self.player_bet = self.player_bet.min(self.player_bank);
 
-                // buttons for making bet
-                if player_one_inputs.tap_x {
-                    if self.player_bet > self.player_bank {
-                        // make sound
-                    } else {
-                        self.player_bank -= self.player_bet;
-                        self.total_bet = self.player_bet;
-                        self.state = BlackJackState::Dealing(DealingState::new());
+                    // buttons for making bet
+                    if player_one_inputs.tap_x {
+                        if self.player_bet > self.player_bank {
+                            buzz();
+                        } else {
+                            self.player_bank -= self.player_bet;
+                            self.total_bet = self.player_bet;
+                            self.state = BlackJackState::Dealing(DealingState::new());
+                        }
                     }
                 }
             }
@@ -499,7 +514,7 @@ impl Model<PlayerState> for BlackJack {
                                 state.player_hand_index += 1;
                             },
                             _ => {
-                                tone(140, 6, 40, 0);
+                                buzz();
                             }
                         }
                     } else {
@@ -528,7 +543,7 @@ impl Model<PlayerState> for BlackJack {
                     } else {
                         for (_, res) in state.player_hands.iter() {
                             self.player_bank += match res {
-                                HandResult::BlackJack => self.player_bet * (1 + 6 / 5),
+                                HandResult::BlackJack => self.player_bet * 6 / 5 + self.player_bet,
                                 HandResult::Lose => 0,
                                 HandResult::Push => self.player_bet,
                                 HandResult::Win => self.player_bet * 2,
@@ -573,7 +588,7 @@ impl Model<PlayerState> for BlackJack {
             }
             Self { state: BlackJackState::DealerResolving(state), .. } => {
                 state.frame_count += 1;
-                if state.dealer_hand.dealer_must_hit() {
+                if state.dealer_hand.dealer_must_hit() && !state.dealer_hand.is_bust() {
                     if state.frame_count % 30 == 0 {
                         state.dealer_hand.cards.push(draw_card(&mut self.horn, &self.rng));
                     }
@@ -656,12 +671,12 @@ impl Model<PlayerState> for BlackJack {
         match self {
             Self { state: BlackJackState::Betting, .. } => {
                 unsafe { *DRAW_COLORS = 0x31; }
-                let t = b"Use \x86\x87 to change bet.";
+                let t = b"\x86\x87: change bet";
                 unsafe {
                     extern_text(t.as_ptr(), t.len(), 0, 142);
                 }
 
-                let t = b"Use \x80 to make bet.";
+                let t = b"\x80: make bet \x81: exit";
                 unsafe {
                     extern_text(t.as_ptr(), t.len(), 0, 151);
                 }
@@ -674,7 +689,7 @@ impl Model<PlayerState> for BlackJack {
                     false,
                 );
             }
-            Self { state: BlackJackState::Insurance(InsuranceState { player_hand, dealer_hand, player_insurance_bet }), .. } => {
+            Self { state: BlackJackState::Insurance(InsuranceState { player_hand, dealer_hand }), .. } => {
                 display_cards(
                     dealer_hand,
                     &[player_hand],
@@ -682,13 +697,13 @@ impl Model<PlayerState> for BlackJack {
                     false
                 );
                 unsafe { *DRAW_COLORS = 0x31; }
-                text(format!("Insurance Bet: ${}", player_insurance_bet), 10, 37);
+                text(format!("Insurance Bet: ${}", self.player_bet / 2), 10, 37);
                 let t = b"Insurance bet?";
                 unsafe {
                     extern_text(t.as_ptr(), t.len(), 0, 142);
                 }
 
-                let t = b"Use \x80 to make bet.";
+                let t = b" \x80: yes  \x81: no";
                 unsafe {
                     extern_text(t.as_ptr(), t.len(), 0, 151);
                 }
